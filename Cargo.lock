@@ -220,6 +220,7 @@ dependencies = [
  "itertools",
  "macroquad",
  "ord_subset",
+ "slotmap",
 ]
 
 [[package]]

@@ -5,26 +5,18 @@ use macroquad::{
         draw_circle,
     }
 };
-
-#[derive(Debug, Clone)]
-pub struct Node {
-    pub(crate) id: u32,
-    pub(crate) p: Vec2,
-    pub(crate) col: Color,
-    pub(crate) rad: f32,
-    pub(crate) to_e_id: Vec<u32>,
-    pub(crate) from_e_id: Vec<u32>
-}
+use crate::{EdgeKey, NodeKey};
 
 
-impl From<Vec2> for Node {
-    fn from(p: Vec2) -> Self {
+impl From<&Vec2> for Node {
+    fn from(p: &Vec2) -> Self {
         Self {
-            p,
+            p: *p,
             ..Node::default()
         }
     }
 }
+
 
 impl From<(f32, f32)> for Node {
     fn from(p: (f32, f32)) -> Self {
@@ -35,19 +27,44 @@ impl From<(f32, f32)> for Node {
     }
 }
 
-impl Default for Node {
-    fn default() -> Self {
+
+
+pub struct NodeId {
+    pub own: NodeKey,
+    pub heads: Vec<EdgeKey>,
+    pub tails: Vec<EdgeKey>
+}
+
+impl NodeId {
+    pub fn new(own: NodeKey) -> Self {
         Self {
-            id: u32::MAX,
-            p: Vec2::NAN,
-            col: BLACK,
-            rad: 10.0,
-            to_e_id: vec![],
-            from_e_id: vec![],
+            own,
+            heads: vec![],
+            tails: vec![]
         }
     }
 }
 
+
+
+pub struct Node {
+    pub(crate) p: Vec2,
+    pub(crate) col: Color,
+    pub(crate) rad: f32,
+    pub id: Option<NodeId>,
+
+}
+
+impl Default for Node {
+    fn default() -> Self {
+        Self {
+            p: Vec2::default(),
+            col: Color::new(0.0, 0.0, 0.0, 0.5),
+            rad: 20.0,
+            id: None,
+        }
+    }
+}
 
 impl Node {
     pub fn new(x: f32, y: f32) -> Self {
@@ -57,12 +74,19 @@ impl Node {
         }
     }
 
-    pub fn set_pos(&mut self, p: Vec2) {
-        self.p = p;
+
+    pub fn get_mut_id(&mut self) -> &mut NodeId {
+        self.id.as_mut().expect("Node is not added to graph")
     }
 
-    pub fn get_pos(&self) -> Vec2 {
-        self.p
+    pub fn get_id(&self) -> &NodeId {
+        self.id.as_ref().expect("Node is not added to graph")
+    }
+
+
+
+    pub fn get_pos(&self) -> &Vec2 {
+        &self.p
     }
 
     pub fn draw(&self) {
