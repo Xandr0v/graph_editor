@@ -1,18 +1,22 @@
 use std::fs;
 use egui_macroquad::egui;
-use egui_macroquad::egui::{FontId};
+use egui_macroquad::egui::{Align, Color32, Pos2, Visuals};
+use egui_macroquad::egui::epaint::Shadow;
+
 use macroquad::camera::{
     Camera2D,
     set_camera
 };
+
 use macroquad::math::{Vec2, vec2};
+use macroquad::prelude::load_texture;
 use macroquad::rand::ChooseRandom;
-use macroquad::time::get_frame_time;
+use macroquad::texture::{draw_texture, Texture2D};
+
 use rand::prelude::*;
 use macroquad_project::*;
 use serde_json;
-
-
+use slotmap::{Key, SecondaryMap};
 
 
 fn window_conf() -> Conf {
@@ -28,11 +32,19 @@ fn window_conf() -> Conf {
 #[macroquad::main(window_conf)]
 async fn main() {
     prevent_quit();
-    let mut graph = match fs::read_to_string(GRAPH_PATH) {
-        Ok(str) => serde_json::from_str(&str).expect("graph loading error"),
+    let mut graph;
+
+    match fs::read_to_string(GRAPH_PATH) {
+        Ok(str) => match serde_json::from_str(&str) {
+            Ok(g) => graph = g,
+            Err(e) => {
+                println!("{}| graph resetted", e);
+                graph = Graph::new();
+            }
+        }
         Err(e) => {
-            println!("{}", e);
-            Graph::new()
+            println!("{}| graph resetted", e);
+            graph = Graph::new();
         }
     };
 
@@ -40,57 +52,157 @@ async fn main() {
     let mut shift_held_sn_k: Option<NodeKey> = None;
     let mut start_n_k = None;
     let mut finish_n_k = None;
+    let mut map: Option<Texture2D> = None;
+
+
+    let mut undirected = UNDIRECTED;
     let mut draw_lengths = DRAW_LENGHTS;
+    let mut no_neighbour_spawn_dist = NO_NEIGHBOUR_SPAWN_DIST;
+    let mut max_neighbour_spawn_dist = MAX_NEIGHBOUR_SPAWN_DIST;
+    let mut min_edge_length = MIN_EDGE_LENGTH;
+    let mut max_edge_length = MAX_EDGE_LENGTH;
+    let mut map_png_path = MAP_PNG_PATH.to_string();
+    let mut load_map = None;
 
     let mut cam: Camera2D = Camera2D::default();
     cam.zoom = 2.0/vec2(WIDTH, -HEIGHT);
 
+    let help = "Ctrl + LMB   - movement
+LMB          - create node, hold and drag
+               to create edge with node
+               or join existing nodes
+Shift + LMB  - move node
+RMB          - hold to delete node or edge
+mouse wheel  - zoom
+S            - set start for path finding
+F            - set finish for path finding
+N            - generate nodes
+E            - generate edges
+T            - name node";
 
-    let help = "WASD        - movement
-'+', '-'    - zoom
-LMB         - create node, hold and drag
-              to create edge with node
-              or join existing nodes
-Shift + LMB - move node
-RMB         - delete node or edge
-C           - hold to delete any selected element
-Shift + C   - delete graph
-1           - set start for path finding
-2           - set finish for path finding
-G + N       - generate nodes
-G + E       - generate edges
 
-when start and finish are set shortest path will be calculated if it exists";
-
+    let mut names: SecondaryMap<NodeKey, Box<String>> = SecondaryMap::new();
 
 
 
     while !is_key_pressed(KeyCode::Escape) && !is_quit_requested() {
         let mut mouse_over_ui = false;
+        let m_v = cam.screen_to_world(Vec2::from(mouse_position()));
+        let mut selected = graph.selected_k_v(&m_v);
+
 
         egui_macroquad::ui(|ctx| {
             mouse_over_ui = ctx.is_pointer_over_area();
+            let mut visuals = Visuals::dark();
 
-            egui::Window::new("how to use")
-                .resizable(false)
+
+
+            visuals.window_shadow = Shadow::small_dark();
+            visuals.widgets.noninteractive.fg_stroke.color = visuals.widgets.inactive.fg_stroke.color;
+            visuals.extreme_bg_color = Color32::TRANSPARENT;
+
+            ctx.set_visuals(visuals);
+
+            egui::Window::new("Menu")
+                .resizable(true)
+                .default_width(200.0)
                 .show(ctx, |ui| {
+                    egui::CollapsingHeader::new("How to use")
 
-                    ui.add(
-                        egui::Label::new(
-                            egui::RichText::new(help)
-                                .font(FontId::monospace(12.0))
-                        ).wrap(true)
-                    );
-                    ui.checkbox(&mut draw_lengths, "draw edge lengths");
+                        .show(ui, |ui| {
+                            ui.monospace(help);
+                            ui.add_sized([300.0, 0.0], egui::Label::new(""));
+                        });
+
+                    egui::CollapsingHeader::new("Settings")
+                        .show(ui, |ui| {
+                            ui.checkbox(&mut undirected, "place undirected edges");
+                            ui.checkbox(&mut draw_lengths, "draw edge lengths");
+
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+                                ui.add(egui::DragValue::new(&mut no_neighbour_spawn_dist).clamp_range(0.0..=500.0).speed(0.05));
+                                ui.label("no neighbour spawn distance");
+                            });
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+                                ui.add(egui::DragValue::new(&mut max_neighbour_spawn_dist).clamp_range(0.0..=500.0).speed(0.05));
+                                ui.label("max neighbour spawn distance");
+                            });
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+                                ui.add(egui::DragValue::new(&mut min_edge_length).clamp_range(no_neighbour_spawn_dist..=500.0).speed(0.05));
+                                ui.label("min edge length");
+                            });
+                            ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+                                ui.add(egui::DragValue::new(&mut max_edge_length).clamp_range(min_edge_length..=500.0).speed(0.05));
+                                ui.label("max edge length");
+                            });
+                            ui.label("");
+                            if ui.button("default settings").clicked() {
+                                undirected = UNDIRECTED;
+                                draw_lengths = DRAW_LENGHTS;
+                                no_neighbour_spawn_dist = NO_NEIGHBOUR_SPAWN_DIST;
+                                max_neighbour_spawn_dist = MAX_NEIGHBOUR_SPAWN_DIST;
+                                min_edge_length = MIN_EDGE_LENGTH;
+                                max_edge_length = MAX_EDGE_LENGTH;
+                            }
+                        });
+
+                    if ui.button("reset graph").clicked() {
+                        graph = Graph::new();
+                        held_sn_k_v = None;
+                        shift_held_sn_k = None;
+                        start_n_k = None;
+                        finish_n_k = None;
+                        selected = SL::None;
+                        names.clear();
+                    }
+                    ui.with_layout(egui::Layout::left_to_right(egui::Align::TOP), |ui| {
+                        ui.label("path: ");
+                        ui.add(egui::TextEdit::singleline(&mut map_png_path).desired_width(f32::INFINITY));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::TOP), |ui| {
+                            if ui.button("load map").clicked() {
+                                load_map = Some(map_png_path.clone());
+                            }
+
+
+                        });
+                    });
+
+
                 });
+
+
+            for (n_k, box_name) in &mut names {
+                let s_scr_p = cam.world_to_screen(graph.nodes[n_k].get_p_v() - Vec2::new(0.0, 15.0));
+                egui::Area::new(n_k.data().as_ffi().to_string())
+                    .pivot(egui::Align2::CENTER_BOTTOM)
+                    .fixed_pos(Pos2::from(s_scr_p.to_array()))
+                    .show(ctx, |ui| {
+                        ui.add(egui::TextEdit::singleline(&mut **box_name)
+                            .desired_width(65.0)
+                            .text_color(Color32::BLACK)
+                            .horizontal_align(Align::Center)
+                            .vertical_align(Align::BOTTOM)
+                        );
+                    });
+
+            }
+
+
         });
 
 
-        let m_v = cam.screen_to_world(Vec2::from(mouse_position()));
-        let mut selected = graph.selected_k_v(&m_v);
         if !mouse_over_ui {
+            if is_key_pressed(KeyCode::T) {
+                if let SL::Node(sn_k) = selected {
+                    names.insert(sn_k, Box::new(String::from("Name")));
+                }
+            }
+
+
+
+
             //Key1
-            if is_key_pressed(KeyCode::Key1) {
+            if is_key_pressed(KeyCode::S) {
                 if let SL::Node(sn_k) = selected {
                     match (start_n_k == Some(sn_k), finish_n_k == Some(sn_k)) {
                         (true, true) => unreachable!(),
@@ -104,7 +216,7 @@ when start and finish are set shortest path will be calculated if it exists";
                 }
             }
             //Key2
-            else if is_key_pressed(KeyCode::Key2) {
+            else if is_key_pressed(KeyCode::F) {
                 if let SL::Node(sn_k) = selected {
                     match (start_n_k == Some(sn_k), finish_n_k == Some(sn_k)) {
                         (true, true) => unreachable!(),
@@ -117,33 +229,32 @@ when start and finish are set shortest path will be calculated if it exists";
                     }
                 }
             }
-
             //Shift + LMB
-            else if is_key_down(KeyCode::LeftShift) && is_mouse_button_pressed(MouseButton::Left) {
-                if let SL::Node(sn_k) = selected {
-                    graph.set_node_pos(sn_k, &m_v);
-                    shift_held_sn_k = Some(sn_k);
-                }
-            }
-
-            //LMB pressed
-            else if is_mouse_button_pressed(MouseButton::Left) {
-                match selected {
-                    SL::Node(sn_k) => {
-                        let sn_v = graph.nodes[sn_k].get_p_v();
-                        held_sn_k_v = Some((sn_k, sn_v));
-                    }
-                    SL::Edge(_) => {}
-                    SL::None => {
-                        let n_k = graph.add_node(Node::from(m_v));
-                        held_sn_k_v = Some((n_k, m_v));
+            else if !is_key_down(KeyCode::LeftControl) {
+                if is_key_down(KeyCode::LeftShift) && is_mouse_button_pressed(MouseButton::Left) {
+                    if let SL::Node(sn_k) = selected {
+                        graph.set_node_pos(sn_k, &m_v);
+                        shift_held_sn_k = Some(sn_k);
                     }
                 }
+
+                //LMB pressed
+                else if is_mouse_button_pressed(MouseButton::Left) {
+                    match selected {
+                        SL::Node(sn_k) => {
+                            let sn_v = graph.nodes[sn_k].get_p_v();
+                            held_sn_k_v = Some((sn_k, sn_v));
+                        }
+                        SL::Edge(_) => {}
+                        SL::None => {
+                            let n_k = graph.add_node(Node::from(m_v));
+                            held_sn_k_v = Some((n_k, m_v));
+                        }
+                    }
+                }
             }
-
-
             //LMB released
-            else if is_mouse_button_released(MouseButton::Left) {
+            if is_mouse_button_released(MouseButton::Left) {
                 match selected {
                     SL::Node(sn_k) => {
                         let sn_v = graph.nodes[sn_k].get_p_v();
@@ -151,7 +262,7 @@ when start and finish are set shortest path will be calculated if it exists";
                         if let Some((sn0_k, sn0_v)) = held_sn_k_v {
                             if sn0_k != sn_k {
                                 graph.add_edge(Edge::from(sn0_v, sn_v), sn0_k, sn_k);
-                                if !ORIENTED { graph.add_edge(Edge::from(sn_v, sn0_v), sn_k, sn0_k); }
+                                if undirected { graph.add_edge(Edge::from(sn_v, sn0_v), sn_k, sn0_k); }
                             }
                         }
                     }
@@ -160,18 +271,20 @@ when start and finish are set shortest path will be calculated if it exists";
                             let dn_k = graph.add_node(Node::from(m_v));
 
                             graph.add_edge(Edge::from(sn0_v, m_v), sn0_k, dn_k);
-                            if !ORIENTED { graph.add_edge(Edge::from(m_v, sn0_v), dn_k, sn0_k); }
+                            if undirected { graph.add_edge(Edge::from(m_v, sn0_v), dn_k, sn0_k); }
                         }
                     }
                 }
                 held_sn_k_v = None;
             }
 
-            //RMB or hold C
-            else if is_mouse_button_pressed(MouseButton::Right) || is_key_down(KeyCode::C) {
+
+            //RMB
+            if is_mouse_button_down(MouseButton::Right) {
                 match selected {
                     SL::Node(sn_k) => {
                         graph.remove_node(sn_k);
+                        names.remove(sn_k);
                         selected = SL::None;
                     }
                     SL::Edge(se_k) => {
@@ -182,38 +295,28 @@ when start and finish are set shortest path will be calculated if it exists";
                 }
             }
 
-            // Shift + C
-            if is_key_down(KeyCode::LeftShift) && is_key_pressed(KeyCode::C) {
-                graph = Graph::new();
-                held_sn_k_v = None;
-                shift_held_sn_k = None;
-                start_n_k = None;
-                finish_n_k = None;
-                selected = SL::None;
-            }
 
-
-            //G + N
-            if is_key_down(KeyCode::G) && is_key_down(KeyCode::N) && !graph.nodes.is_empty() {
+            //N
+            if is_key_down(KeyCode::N) && !graph.nodes.is_empty() {
                 let n_k = graph.nodes.keys().choose(&mut thread_rng()).unwrap();
                 let n_v = graph.nodes[n_k].get_p_v();
 
 
-                let rv = n_v + Vec2::new((random::<f32>() - 0.5) * 2.0 * MAX_SPAWN_NEIGHBOUR_DIST,
-                                         (random::<f32>() - 0.5) * 2.0 * MAX_SPAWN_NEIGHBOUR_DIST);
-                if graph.find_nodes(rv, 0.0, MIN_NEIGHBOUR_DIST).is_empty() &&
-                    !graph.find_nodes(rv, 0.0, MAX_SPAWN_NEIGHBOUR_DIST).is_empty() {
+                let rv = n_v + Vec2::new((random::<f32>() - 0.5) * 2.0 * max_neighbour_spawn_dist,
+                                         (random::<f32>() - 0.5) * 2.0 * max_neighbour_spawn_dist);
+                if graph.find_nodes(rv, 0.0, no_neighbour_spawn_dist).is_empty() &&
+                    !graph.find_nodes(rv, 0.0, max_neighbour_spawn_dist).is_empty() {
                     graph.add_node(Node::from(rv));
                 }
             }
 
 
-            //G + E
-            if is_key_down(KeyCode::G) && is_key_down(KeyCode::E) && !graph.nodes.is_empty() {
+            //E
+            if is_key_down(KeyCode::E) && !graph.nodes.is_empty() {
                 let n_k = graph.nodes.keys().choose(&mut thread_rng()).unwrap();
                 let n_v = graph.nodes[n_k].get_p_v();
 
-                if let Some(&rn_k) = graph.find_nodes(n_v, MINIMUM_EDGE_LENGTH, MAXIMUM_EDGE_LENGTH).choose() {
+                if let Some(&rn_k) = graph.find_nodes(n_v, min_edge_length, max_edge_length).choose() {
                     let rn_v = graph.nodes[rn_k].get_p_v();
 
                     graph.add_edge(Edge::from(n_v, rn_v), n_k, rn_k);
@@ -233,24 +336,36 @@ when start and finish are set shortest path will be calculated if it exists";
 
 
         {
-            let cam_speed = 300.0 * get_frame_time();
-            let zoom_speed = 1.2;
-            if is_key_down(KeyCode::W) { cam.target += vec2(0.0, -cam_speed); }
-            if is_key_down(KeyCode::S) { cam.target += vec2(0.0, cam_speed); }
-            if is_key_down(KeyCode::A) { cam.target += vec2(-cam_speed, 0.0); }
-            if is_key_down(KeyCode::D) { cam.target += vec2(cam_speed, 0.0); }
-            if is_key_pressed(KeyCode::Equal) { cam.zoom *= zoom_speed; }
-            if is_key_pressed(KeyCode::Minus) { cam.zoom /= zoom_speed; }
+            let (_mwx, mwy) = mouse_wheel();
+            if mwy > 0.0 {cam.zoom *= 1.02}
+            else if mwy < 0.0 {cam.zoom /= 1.02}
+
+            let mdp = mouse_delta_position();
+            if is_key_down(KeyCode::LeftControl) && is_mouse_button_down(MouseButton::Left) {
+                cam.target += mdp / cam.zoom * vec2(1.0, -1.0);
+            }
             set_camera(&cam);
         }
 
-
+        if let Some(path) = load_map {
+            match load_texture(path.as_str()).await {
+                Ok(texture) => map = Some(texture),
+                Err(e) => {
+                    println!("{}", e);
+                    map = None;
+                }
+            }
+            load_map = None;
+        }
 
         // drawing
         clear_background(BACKGROUND_COLOR);
         set_camera(&cam);
 
 
+        if let Some(ref texture) = map {
+            draw_texture(*texture, 0.0, 0.0, WHITE);
+        }
 
         if let Some(n_k) = start_n_k {
             match graph.nodes.get(n_k) {
